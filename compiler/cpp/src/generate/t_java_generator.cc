@@ -130,10 +130,13 @@ public:
 
   void generate_service_interface (t_service* tservice);
   void generate_service_async_interface(t_service* tservice);
+  void generate_service_service_interface(t_service* tservice);
   void generate_service_helpers   (t_service* tservice);
   void generate_service_client    (t_service* tservice);
   void generate_service_async_client(t_service* tservice);
+  void generate_service_service_client(t_service* tservice);
   void generate_service_server    (t_service* tservice);
+  void generate_service_service   (t_service* tservice);
   void generate_process_function  (t_service* tservice, t_function* tfunction);
 
   void generate_java_union(t_struct* tstruct);
@@ -248,16 +251,20 @@ public:
 
   std::string java_package();
   std::string java_type_imports();
+  std::string java_service_imports();
+  std::string java_struct_imports();
   std::string type_name(t_type* ttype, bool in_container=false, bool in_init=false, bool skip_generic=false);
   std::string base_type_name(t_base_type* tbase, bool in_container=false);
   std::string declare_field(t_field* tfield, bool init=false);
   std::string function_signature(t_function* tfunction, std::string prefix="");
   std::string function_signature_async(t_function* tfunction, bool use_base_method = false, std::string prefix="");
+  std::string function_signature_service(t_function* tfunction, std::string prefix="");
   std::string argument_list(t_struct* tstruct, bool include_types = true);
   std::string async_function_call_arglist(t_function* tfunc, bool use_base_method = true, bool include_types = true);
   std::string async_argument_list(t_function* tfunct, t_struct* tstruct, t_type* ttype, bool include_types=false);
   std::string type_to_enum(t_type* ttype);
   std::string get_enum_class_name(t_type* type);
+  std::string boxed_type_name(t_type* type);
   void generate_struct_desc(ofstream& out, t_struct* tstruct);
   void generate_field_descs(ofstream& out, t_struct* tstruct);
   void generate_field_name_constants(ofstream& out, t_struct* tstruct);
@@ -367,6 +374,25 @@ string t_java_generator::java_type_imports() {
     "import org.slf4j.Logger;\n" +
     "import org.slf4j.LoggerFactory;\n\n";
 }
+
+string t_java_generator::java_service_imports() {
+  return
+    string() +
+    "import com.twitter.util.Future;\n" +
+    "import com.twitter.util.Function;\n" +
+    "import com.twitter.util.Function2;\n" +
+    "import com.twitter.util.Try;\n" +
+    "import com.twitter.util.Return;\n" +
+    "import com.twitter.util.Throw;\n" +
+    "import com.twitter.finagle.thrift.ThriftClientRequest;\n\n";
+}
+
+string t_java_generator::java_struct_imports() {
+  return
+    string() +
+    "// No additional import required for struct/union.\n\n";
+}
+
 
 /**
  * Nothing in Java
@@ -694,7 +720,8 @@ void t_java_generator::generate_java_struct(t_struct* tstruct,
   f_struct <<
     autogen_comment() <<
     java_package() <<
-    java_type_imports();
+    java_type_imports() <<
+    java_struct_imports();
 
   generate_java_struct_definition(f_struct,
                                   tstruct,
@@ -716,7 +743,8 @@ void t_java_generator::generate_java_union(t_struct* tstruct) {
   f_struct <<
     autogen_comment() <<
     java_package() <<
-    java_type_imports();
+    java_type_imports() <<
+    java_struct_imports();
 
   generate_java_doc(f_struct, tstruct);
 
@@ -2159,7 +2187,8 @@ void t_java_generator::generate_service(t_service* tservice) {
   f_service_ <<
     autogen_comment() <<
     java_package() <<
-    java_type_imports();
+    java_type_imports() <<
+    java_service_imports();
 
   f_service_ << "public class " << service_name_ << " {" << endl << endl;
   indent_up();
@@ -2167,9 +2196,12 @@ void t_java_generator::generate_service(t_service* tservice) {
   // Generate the three main parts of the service
   generate_service_interface(tservice);
   generate_service_async_interface(tservice);
+  generate_service_service_interface(tservice);
   generate_service_client(tservice);
   generate_service_async_client(tservice);
+  generate_service_service_client(tservice);
   generate_service_server(tservice);
+  generate_service_service(tservice);
   generate_service_helpers(tservice);
 
   indent_down();
@@ -2210,7 +2242,7 @@ void t_java_generator::generate_service_async_interface(t_service* tservice) {
   string extends_iface = "";
   if (tservice->get_extends() != NULL) {
     extends = type_name(tservice->get_extends());
-    extends_iface = " extends " + extends + " .AsyncIface";
+    extends_iface = " extends " + extends + ".AsyncIface";
   }
 
   f_service_ << indent() << "public interface AsyncIface" << extends_iface << " {" << endl << endl;
@@ -2223,6 +2255,26 @@ void t_java_generator::generate_service_async_interface(t_service* tservice) {
   indent_down();
   f_service_ << indent() << "}" << endl << endl;
 }
+
+void t_java_generator::generate_service_service_interface(t_service* tservice) {
+  string extends = "";
+  string extends_iface = "";
+  if (tservice->get_extends() != NULL) {
+    extends = type_name(tservice->get_extends());
+    extends_iface = " extends " + extends + ".ServiceIface";
+  }
+
+  f_service_ << indent() << "public interface ServiceIface" << extends_iface << " {" << endl << endl;
+  indent_up();
+  vector<t_function*> functions = tservice->get_functions();
+  vector<t_function*>::iterator f_iter;
+  for (f_iter = functions.begin(); f_iter != functions.end(); ++f_iter) {
+    indent(f_service_) << "public " << function_signature_service(*f_iter) << ";" << endl << endl;
+  }
+  indent_down();
+  f_service_ << indent() << "}" << endl << endl;
+}
+
 
 /**
  * Generates structs for all the service args and return types
@@ -2532,6 +2584,104 @@ void t_java_generator::generate_service_async_client(t_service* tservice) {
   f_service_ << endl;
 }
 
+void t_java_generator::generate_service_service_client(t_service* tservice) {
+  string extends;
+  bool does_extend = tservice->get_extends() != NULL;
+
+  if (does_extend)
+    extends = "extends " + type_name(tservice->get_extends()) + ".ServiceToClient ";
+  else
+    extends = "";
+
+  indent(f_service_) << "public static class ServiceToClient " << extends << "implements ServiceIface {" << endl;
+  indent_up();
+
+  indent(f_service_) << "private com.twitter.finagle.Service<ThriftClientRequest, byte[]> service;" << endl;
+  indent(f_service_) << "private org.apache.thrift.protocol.TProtocolFactory protocolFactory;" << endl;
+
+  indent(f_service_) << "public ServiceToClient(com.twitter.finagle.Service<ThriftClientRequest, byte[]> service, org.apache.thrift.protocol.TProtocolFactory protocolFactory) {" << endl;
+  if (does_extend)
+    indent(f_service_) << "  super(service, protocolFactory);" << endl;
+  indent(f_service_) << "  this.service = service;" << endl;
+  indent(f_service_) << "  this.protocolFactory = protocolFactory;" << endl;
+  indent(f_service_) << "}" << endl << endl;
+
+  // Generate client method implementations
+  vector<t_function*> functions = tservice->get_functions();
+  vector<t_function*>::const_iterator f_iter;
+  for (f_iter = functions.begin(); f_iter != functions.end(); ++f_iter) {
+    string funname = (*f_iter)->get_name();
+    t_type* ret_type = (*f_iter)->get_returntype();
+    t_struct* arg_struct = (*f_iter)->get_arglist();
+    string funclassname = funname + "_call";
+    const vector<t_field*>& fields = arg_struct->get_members();
+    vector<t_field*>::const_iterator fld_iter;
+    string args_name = (*f_iter)->get_name() + "_args";
+    string result_name = (*f_iter)->get_name() + "_result";
+
+    indent(f_service_) << "public " << function_signature_service(*f_iter) << " {" << endl;
+    indent(f_service_) << "  try {" << endl;
+    indent_up();
+
+    indent(f_service_) << "  // TODO: size" << endl;
+    indent(f_service_) << "  org.apache.thrift.transport.TMemoryBuffer __memoryTransport__ = new org.apache.thrift.transport.TMemoryBuffer(512);" << endl;
+    indent(f_service_) << "  org.apache.thrift.protocol.TProtocol __prot__ = this.protocolFactory.getProtocol(__memoryTransport__);" << endl;
+    indent_up();
+
+    f_service_ <<
+      indent() << "__prot__.writeMessageBegin(new org.apache.thrift.protocol.TMessage(\"" << funname << "\", org.apache.thrift.protocol.TMessageType.CALL, 0));" << endl <<
+      indent() << args_name << " __args__ = new " << args_name << "();" << endl;
+
+    for (fld_iter = fields.begin(); fld_iter != fields.end(); ++fld_iter) {
+      f_service_ << indent() << "__args__.set" << get_cap_name((*fld_iter)->get_name()) << "(" << (*fld_iter)->get_name() << ");" << endl;
+    }
+
+    f_service_ <<
+      indent() << "__args__.write(__prot__);" << endl <<
+      indent() << "__prot__.writeMessageEnd();" << endl;
+
+    indent_down();
+
+    indent(f_service_) << endl << endl;
+
+    indent(f_service_) << "  byte[] __buffer__ = Arrays.copyOfRange(__memoryTransport__.getArray(), 0, __memoryTransport__.length());" << endl;
+    indent(f_service_) << "  ThriftClientRequest __request__ = new ThriftClientRequest(__buffer__, " + (string)((*f_iter)->is_oneway() ? "true" : "false") + ");" << endl;
+    indent(f_service_) << "  Future<byte[]> __done__ = this.service.apply(__request__);" << endl;
+
+    indent(f_service_) << "  return __done__.flatMap(new Function<byte[], Future<" + boxed_type_name(ret_type) + ">>() {" << endl;
+
+    indent(f_service_) << "    public Future<" + boxed_type_name(ret_type) + "> apply(byte[] __buffer__) {"  << endl;
+    indent(f_service_) << "      org.apache.thrift.transport.TMemoryInputTransport __memoryTransport__ = new org.apache.thrift.transport.TMemoryInputTransport(__buffer__);" << endl;
+    indent(f_service_) << "      org.apache.thrift.protocol.TProtocol __prot__ = ServiceToClient.this.protocolFactory.getProtocol(__memoryTransport__);" << endl;
+    indent(f_service_) << "      try {" << endl;
+
+    if ((*f_iter)->is_oneway() || (*f_iter)->get_returntype()->is_void()) {
+      if (!(*f_iter)->is_oneway())
+        indent(f_service_) << "        (new Client(__prot__)).recv_" + funname + "();" << endl;
+      indent(f_service_) << "        return Future.value(null);" << endl;
+    } else {
+      indent(f_service_) << "        return Future.value((new Client(__prot__)).recv_" + funname + "());" << endl;
+    }
+
+    indent(f_service_) << "      } catch (Exception e) {" << endl;
+    indent(f_service_) << "        return Future.exception(e);" << endl;
+    indent(f_service_) << "      }" << endl;
+    indent(f_service_) << "    }" << endl;
+    indent(f_service_) << "  });" << endl;
+
+    indent_down();
+    indent(f_service_) << "  } catch (org.apache.thrift.TException e) {" << endl;
+    indent(f_service_) << "    return Future.exception(e);" << endl;
+    indent(f_service_) << "  }" << endl;
+
+    indent(f_service_) << "}" << endl;
+  }
+
+  // Close ServiceToClient
+  scope_down(f_service_);
+  f_service_ << endl;
+}
+
 /**
  * Generates a service server definition.
  *
@@ -2583,6 +2733,240 @@ void t_java_generator::generate_service_server(t_service* tservice) {
 
   indent_down();
   indent(f_service_) << "}" << endl << endl;
+}
+
+void t_java_generator::generate_service_service(t_service* tservice) {
+  // Generate the dispatch methods
+  vector<t_function*> functions = tservice->get_functions();
+  vector<t_function*>::iterator f_iter;
+
+  // Extends stuff
+  string extends = "";
+  string extends_service = "";
+  if (tservice->get_extends() != NULL) {
+    extends = type_name(tservice->get_extends());
+    extends_service = " extends " + extends + ".Service";
+  } else {
+    extends_service = " extends com.twitter.finagle.Service<byte[], byte[]>";
+  }
+
+  // Generate the header portion
+  indent(f_service_) <<
+    "public static class Service" << extends_service << " {" << endl;
+  indent_up();
+
+  indent(f_service_) << "private final ServiceIface iface;" << endl;
+  indent(f_service_) << "private final org.apache.thrift.protocol.TProtocolFactory protocolFactory;" << endl;
+
+  if (extends.empty()) {
+    indent(f_service_) << "protected HashMap<String, Function2<org.apache.thrift.protocol.TProtocol, Integer, Future<byte[]>>> functionMap = new HashMap<String, Function2<org.apache.thrift.protocol.TProtocol, Integer, Future<byte[]>>>();" << endl;
+  }
+
+  indent(f_service_) <<
+    "public Service(final ServiceIface iface, final org.apache.thrift.protocol.TProtocolFactory protocolFactory) {" << endl;
+  indent_up();
+  if (!extends.empty())
+    indent(f_service_) << "super(iface, protocolFactory);" << endl;
+
+  indent(f_service_) << "this.iface = iface;" << endl;
+  indent(f_service_) << "this.protocolFactory = protocolFactory;" << endl;
+
+  for (f_iter = functions.begin(); f_iter != functions.end(); ++f_iter) {
+    indent(f_service_)
+      << "functionMap.put(\"" << (*f_iter)->get_name() << "\", new Function2<org.apache.thrift.protocol.TProtocol, Integer, Future<byte[]>>() {" << endl;
+    indent_up();
+    indent(f_service_) << "public Future<byte[]> apply(final org.apache.thrift.protocol.TProtocol iprot, final Integer seqid) {" << endl;
+    indent_up();
+
+    indent(f_service_) << (*f_iter)->get_name() + "_args args = new " + (*f_iter)->get_name() + "_args();" << endl;
+
+    indent(f_service_) << "try {" << endl;
+    indent(f_service_) << "  args.read(iprot);" << endl;
+    indent(f_service_) << "} catch (org.apache.thrift.protocol.TProtocolException e) {" << endl;
+    indent(f_service_) << "  try {" << endl;
+    indent(f_service_) << "    iprot.readMessageEnd();" << endl;
+    indent(f_service_) << "    org.apache.thrift.TApplicationException x = new org.apache.thrift.TApplicationException(org.apache.thrift.TApplicationException.PROTOCOL_ERROR, e.getMessage());" << endl;
+    indent(f_service_) << "    org.apache.thrift.transport.TMemoryBuffer memoryBuffer = new org.apache.thrift.transport.TMemoryBuffer(512);" << endl;
+    indent(f_service_) << "    org.apache.thrift.protocol.TProtocol oprot = protocolFactory.getProtocol(memoryBuffer);" << endl;
+    indent(f_service_) << endl;
+    indent(f_service_) << "    oprot.writeMessageBegin(new org.apache.thrift.protocol.TMessage(\"" + (*f_iter)->get_name() +  "\", org.apache.thrift.protocol.TMessageType.EXCEPTION, seqid));" << endl;
+    indent(f_service_) << "    x.write(oprot);" << endl;
+    indent(f_service_) << "    oprot.writeMessageEnd();" << endl;
+    indent(f_service_) << "    oprot.getTransport().flush();" << endl;
+    indent(f_service_) << "    byte[] buffer = Arrays.copyOfRange(memoryBuffer.getArray(), 0, memoryBuffer.length());" << endl;
+    indent(f_service_) << "    return Future.value(buffer);" << endl;
+    indent(f_service_) << "  } catch (Exception e1) {" << endl;
+    indent(f_service_) << "    return Future.exception(e1);" << endl;
+    indent(f_service_) << "  }" << endl;
+    indent(f_service_) << "} catch (Exception e) {" << endl;
+    indent(f_service_) << "  return Future.exception(e);" << endl;
+    indent(f_service_) << "}" << endl;
+    indent(f_service_) << endl;
+
+    indent(f_service_) << "try {" << endl;
+    indent(f_service_) << "  iprot.readMessageEnd();" << endl;
+    indent(f_service_) << "} catch (Exception e) {" << endl;
+    indent(f_service_) << "  return Future.exception(e);" << endl;
+    indent(f_service_) << "}" << endl;
+
+    t_type* ret_type = (*f_iter)->get_returntype();
+    indent(f_service_) << "Future<" + boxed_type_name(ret_type) + "> future;" << endl;
+
+    indent(f_service_) << "try {" << endl;
+    indent(f_service_) << "  future = iface." << (*f_iter)->get_name() << "(";
+    { // argument list
+      t_struct* arg_struct = (*f_iter)->get_arglist();
+      const std::vector<t_field*>& fields = arg_struct->get_members();
+      vector<t_field*>::const_iterator field_iter;
+      bool first = true;
+      for (field_iter = fields.begin(); field_iter != fields.end(); ++field_iter) {
+        if (first) {
+          first = false;
+        } else {
+          f_service_ << ", ";
+        }
+        f_service_ << "args." << (*field_iter)->get_name();
+      }
+      f_service_ << ");" << endl;
+    }
+    indent(f_service_) << "} catch (Exception e) {" << endl;
+    indent(f_service_) << "  future = Future.exception(e);" << endl;
+    indent(f_service_) << "}" << endl;
+
+    if ((*f_iter)->is_oneway()) {
+      indent(f_service_) << "return future.map(new Function<" + boxed_type_name(ret_type) + ", byte[]>() {" << endl;
+      indent(f_service_) << "  public byte[] apply(" + boxed_type_name(ret_type) + " value) {" << endl;
+      indent(f_service_) << "    return new byte[0];" << endl;
+      indent(f_service_) << "  }" << endl;
+      indent(f_service_) << "});" << endl;
+    } else {
+      indent(f_service_) << "try {" << endl;
+      indent(f_service_) << "  return future.flatMap(new Function<" + boxed_type_name(ret_type) + ", Future<byte[]>>() {" << endl;
+      indent(f_service_) << "    public Future<byte[]> apply(" + boxed_type_name(ret_type) + " value) {" << endl;
+      indent(f_service_) << "      " + (*f_iter)->get_name() + "_result result = new " + (*f_iter)->get_name() + "_result();" << endl;
+
+      if (!(*f_iter)->is_oneway() && !ret_type->is_void()) {
+        indent(f_service_) << "      result.success = value;" << endl;
+        indent(f_service_) << "      result.set" << get_cap_name("success") << get_cap_name("isSet") << "(true);" << endl;
+      }
+
+      indent(f_service_) << "" << endl;
+      indent(f_service_) << "      try {" << endl;
+      indent(f_service_) << "        org.apache.thrift.transport.TMemoryBuffer memoryBuffer = new org.apache.thrift.transport.TMemoryBuffer(512);" << endl;
+      indent(f_service_) << "        org.apache.thrift.protocol.TProtocol oprot = protocolFactory.getProtocol(memoryBuffer);" << endl;
+      indent(f_service_) << "         " << endl;
+      indent(f_service_) << "        oprot.writeMessageBegin(new org.apache.thrift.protocol.TMessage(\"" + (*f_iter)->get_name() + "\", org.apache.thrift.protocol.TMessageType.REPLY, seqid));" << endl;
+      indent(f_service_) << "        result.write(oprot);" << endl;
+      indent(f_service_) << "        oprot.writeMessageEnd();" << endl;
+      indent(f_service_) << "         " << endl;
+      indent(f_service_) << "        return Future.value(Arrays.copyOfRange(memoryBuffer.getArray(), 0, memoryBuffer.length()));" << endl;
+      indent(f_service_) << "      } catch (Exception e) {" << endl;
+      indent(f_service_) << "        return Future.exception(e);" << endl;
+      indent(f_service_) << "      }" << endl;
+      indent(f_service_) << "    }" << endl;
+      indent(f_service_) << "  }).rescue(new Function<Throwable, Future<byte[]>>() {" << endl;
+      indent(f_service_) << "    public Future<byte[]> apply(Throwable t) {" << endl;
+      t_struct* xs = (*f_iter)->get_xceptions();
+      const std::vector<t_field*>& xceptions = xs->get_members();
+      vector<t_field*>::const_iterator x_iter;
+      if (!(*f_iter)->is_oneway() && xceptions.size() > 0) {
+        indent(f_service_) << "      try {" << endl;
+        indent_up();
+         indent(f_service_) << "      " + (*f_iter)->get_name() + "_result result = new " + (*f_iter)->get_name() + "_result();" << endl;
+
+        for (x_iter = xceptions.begin(); x_iter != xceptions.end(); ++x_iter) {
+          string prefix("");
+          if (x_iter != xceptions.begin())
+            prefix = "else ";
+
+          indent(f_service_) << "      " + prefix + "if (t instanceof " + type_name((*x_iter)->get_type(), false, false) + ") {" << endl;
+          indent(f_service_) << "        result." << (*x_iter)->get_name() << " = " << "(" + type_name((*x_iter)->get_type(), false, false) + ")" + "t" << ";" << endl;
+          indent(f_service_) << "      }" << endl;
+        }
+
+        indent(f_service_) << "      else {" << endl;
+        indent_up();
+        indent(f_service_) << "      return Future.exception(t);" << endl;
+        indent_down();
+        indent(f_service_) << "      }" << endl;
+        indent(f_service_) << "      org.apache.thrift.transport.TMemoryBuffer memoryBuffer = new org.apache.thrift.transport.TMemoryBuffer(512);" << endl;
+        indent(f_service_) << "      org.apache.thrift.protocol.TProtocol oprot = protocolFactory.getProtocol(memoryBuffer);" << endl;
+
+        indent(f_service_) << "      oprot.writeMessageBegin(new org.apache.thrift.protocol.TMessage(\"" + (*f_iter)->get_name() + "\", org.apache.thrift.protocol.TMessageType.REPLY, seqid));" << endl;
+        indent(f_service_) << "      result.write(oprot);" << endl;
+        indent(f_service_) << "      oprot.writeMessageEnd();" << endl;
+        indent(f_service_) << "      oprot.getTransport().flush();" << endl;
+        indent(f_service_) << "      return Future.value(Arrays.copyOfRange(memoryBuffer.getArray(), 0, memoryBuffer.length()));" << endl;
+        indent_down();
+        indent(f_service_) << "      } catch (Exception e) {" << endl;
+        indent(f_service_) << "        return Future.exception(e);" << endl;
+        indent(f_service_) << "      }" << endl;
+      } else {
+        indent(f_service_) << "      return Future.exception(t);" << endl;
+      }
+
+      indent(f_service_) << "    }" << endl;
+
+      indent(f_service_) << "  });" << endl;
+      indent(f_service_) << "} catch (Exception e) {" << endl;
+      indent(f_service_) << "  return Future.exception(e);" << endl;
+      indent(f_service_) << "}" << endl;
+    }
+
+    indent_down();
+
+    indent(f_service_) << "}" << endl;
+
+    indent_down();
+
+    indent(f_service_) << "});" << endl;
+
+    indent(f_service_) << endl;
+
+  }
+
+  scope_down(f_service_);
+
+  indent(f_service_) << endl;
+  indent(f_service_) << "public Future<byte[]> apply(byte[] request) {" << endl;
+  indent(f_service_) << "  org.apache.thrift.transport.TTransport inputTransport = new org.apache.thrift.transport.TMemoryInputTransport(request);" << endl;
+  indent(f_service_) << "  org.apache.thrift.protocol.TProtocol iprot = protocolFactory.getProtocol(inputTransport);" << endl;
+  indent(f_service_) << endl;
+  indent(f_service_) << "  org.apache.thrift.protocol.TMessage msg;" << endl;
+  indent(f_service_) << "  try {" << endl;
+  indent(f_service_) << "    msg = iprot.readMessageBegin();" << endl;
+  indent(f_service_) << "  } catch (Exception e) {" << endl;
+  indent(f_service_) << "    return Future.exception(e);" << endl;
+  indent(f_service_) << "  }" << endl;
+  indent(f_service_) << endl;
+  indent(f_service_) << "  Function2<org.apache.thrift.protocol.TProtocol, Integer, Future<byte[]>> fn = functionMap.get(msg.name);" << endl;
+  indent(f_service_) << "  if (fn == null) {" << endl;
+  indent(f_service_) << "    try {" << endl;
+  indent(f_service_) << "      org.apache.thrift.protocol.TProtocolUtil.skip(iprot, org.apache.thrift.protocol.TType.STRUCT);" << endl;
+  indent(f_service_) << "      iprot.readMessageEnd();" << endl;
+  indent(f_service_) << "      org.apache.thrift.TApplicationException x = new org.apache.thrift.TApplicationException(org.apache.thrift.TApplicationException.UNKNOWN_METHOD, \"Invalid method name: '\"+msg.name+\"'\");" << endl;
+  indent(f_service_) << "      org.apache.thrift.transport.TMemoryBuffer memoryBuffer = new org.apache.thrift.transport.TMemoryBuffer(512);" << endl;
+  indent(f_service_) << "      org.apache.thrift.protocol.TProtocol oprot = protocolFactory.getProtocol(memoryBuffer);" << endl;
+  indent(f_service_) << "      oprot.writeMessageBegin(new org.apache.thrift.protocol.TMessage(msg.name, org.apache.thrift.protocol.TMessageType.EXCEPTION, msg.seqid));" << endl;
+  indent(f_service_) << "      x.write(oprot);" << endl;
+  indent(f_service_) << "      oprot.writeMessageEnd();" << endl;
+  indent(f_service_) << "      oprot.getTransport().flush();" << endl;
+  indent(f_service_) << "      return Future.value(Arrays.copyOfRange(memoryBuffer.getArray(), 0, memoryBuffer.length()));" << endl;
+  indent(f_service_) << "    } catch (Exception e) {" << endl;
+  indent(f_service_) << "      return Future.exception(e);" << endl;
+  indent(f_service_) << "    }" << endl;
+  indent(f_service_) << "  }" << endl;
+  indent(f_service_) << endl;
+  indent(f_service_) << "  return fn.apply(iprot, msg.seqid);" << endl;
+  indent(f_service_) << "}" << endl;
+
+  f_service_ << endl;
+
+  indent_down();
+  indent(f_service_) <<
+    "}" << endl <<
+    endl;
+
 }
 
 /**
@@ -3334,6 +3718,11 @@ string t_java_generator::async_function_call_arglist(t_function* tfunc, bool use
   return arglist;
 }
 
+string t_java_generator::function_signature_service(t_function* tfunction, string prefix) {
+  t_type* ttype = tfunction->get_returntype();
+  return ("Future<"  + boxed_type_name(ttype) + ">" + " " + prefix + tfunction->get_name() + "(" + argument_list(tfunction->get_arglist()) + ")");
+}
+
 /**
  * Renders a comma separated field list, with type names
  */
@@ -3648,6 +4037,30 @@ std::string t_java_generator::get_enum_class_name(t_type* type) {
 void t_java_generator::generate_struct_desc(ofstream& out, t_struct* tstruct) {
   indent(out) <<
   "private static final org.apache.thrift.protocol.TStruct STRUCT_DESC = new org.apache.thrift.protocol.TStruct(\"" << tstruct->get_name() << "\");" << endl;
+}
+
+string t_java_generator::boxed_type_name(t_type* type) {
+  if (type->is_base_type()) {
+    switch (((t_base_type*)type)->get_base()) {
+    case t_base_type::TYPE_BOOL:
+      return "Boolean";
+    case t_base_type::TYPE_BYTE:
+      return "Byte";
+    case t_base_type::TYPE_I16:
+      return "Short";
+    case t_base_type::TYPE_I32:
+      return "Integer";
+    case t_base_type::TYPE_I64:
+      return "Long";
+    case t_base_type::TYPE_DOUBLE:
+      return "Double";
+    case t_base_type::TYPE_VOID:
+      return "Void";
+    default:
+      break;
+    }
+  }
+  return type_name(type);
 }
 
 void t_java_generator::generate_field_descs(ofstream& out, t_struct* tstruct) {
